@@ -1,11 +1,17 @@
 cmake_minimum_required(VERSION 3.10)
 project(compute)
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-find_package(Boost REQUIRED)
-find_package(OpenCL REQUIRED)
-find_package(TBB REQUIRED)
+if(CMAKE_CUDA_COMPILER)
+enable_language(CUDA)
+set(CMAKE_CUDA_ARCHITECTURES 75) # Change accordingly.
+add_executable(compute_cu src/compute.cu)
+endif()
 
-add_executable(compute src/compute.cc)
-target_link_libraries(compute OpenCL::OpenCL Boost::boost TBB::tbb)
+find_package(OpenCL)
+if(${OpenCL_FOUND})
+    message(STATUS "Compiling OpenCL app")
+    find_package(Boost REQUIRED)
+    add_executable(compute_cl src/compute.cc)
+    target_link_libraries(compute_cl OpenCL::OpenCL)
+endif()

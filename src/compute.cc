@@ -5,11 +5,6 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
-#include <execution>
-#include <boost/compute/event.hpp>
-#include <tbb/parallel_reduce.h>
-#include <tbb/blocked_range.h>
-#include <future>
 
 namespace compute = boost::compute;
 
@@ -28,6 +23,7 @@ BOOST_COMPUTE_FUNCTION(float, dist2, (Point2 pt),
 
 BOOST_COMPUTE_FUNCTION(Point2, sqrt2, (Point2 pt),
                        {
+                           Eigen::xxVector2f eig;
                            Point2 ret;
                            ret.x = sin(cos(sin(tan(sqrt(pt.x)))));
                            ret.y = sin(cos(sin(tan(sqrt(pt.y)))));
@@ -50,11 +46,19 @@ int main()
 {
 
     // get the default device
-    for (const auto &device : compute::system::devices())
+    auto devices = compute::system::devices();
+
+    if (devices.size() == 0)
+    {
+        std::cout << "No CL devices found\n";
+        exit(0);
+    }
+    for (const auto &device : devices)
     {
         std::cout << "found device: " << device.name() << std::endl;
     }
-    compute::device gpu = compute::system::default_device();
+
+    compute::device gpu = compute::system::devices()[0];
 
     // print the device's name and platform
     std::cout << "hello from " << gpu.name();
@@ -64,7 +68,7 @@ int main()
     compute::context ctx(gpu);
     compute::command_queue queue(ctx, gpu, compute::command_queue::enable_profiling);
 
-    constexpr int num_elements = 100'000'000;
+    constexpr int num_elements = 2'000'000;
     std::cout << "Mem used: " << num_elements * sizeof(Point2) / (1024 * 1024) << "MB\n";
     // generate random numbers on the host
     std::vector<Point2> host_vector(num_elements);
@@ -101,7 +105,7 @@ int main()
     std::cout << "Alloc  gpu\n";
     compute::event start_event = queue.enqueue_marker();
     compute::vector<Point2> device_vector(num_elements, ctx);
-    compute::vector<float> device_results(num_elements, ctx);
+    // compute::vector<float> device_results(num_elements, ctx);
 
     // Copy
     std::cout << "Copying to gpu\n";
@@ -115,69 +119,78 @@ int main()
 
     // std::cout << "Copy to GPU took: " << end_event.duration<boost::chrono::nanoseconds>().count() << " millis\n";
 
-    while (true) // for (int k = 0; k < 99999999; ++k)
+    for (int k = 0; k < 10; ++k)
     {
         float total_device = 0.;
         Point2 reduce_result;
 
-        auto promise = std::async(std::launch::async, [&]() -> Point2
-                                  { 
-        start = std::chrono::high_resolution_clock::now();
-        tbb::blocked_range<Point2 *> r(host_vector.data(), host_vector.data() + num_elements);
-        auto parallel_host_res = tbb::parallel_reduce(
-            r, Point2(),
-            [](const tbb::blocked_range<Point2 *> &r, Point2 init) -> Point2
-            {
-                Point2 local;
-                for (auto pt : r)
-                {
-                    local.x += sin(cos(sin(tan(sqrt(pt.x)))));
-                    local.y += sin(cos(sin(tan(sqrt(pt.x)))));
-                }
-                Point2 res;
-                res.x = init.x + local.x;
-                res.y = init.y + local.y;
-                return res;
-            },
-            [](Point2 a, Point2 b) -> Point2
-            {
-                Point2 ret;
-                ret.x = a.x + b.x;
-                ret.y = a.y + b.y;
-                return ret;
-            });
-        delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
-        std::cout << "Cpu Parallel TR took: " << delta << " millis\n";
-        return parallel_host_res; });
+        // auto promise = std::async(std::launch::async, [&]() -> Point2
+        //                           {
+        // start = std::chrono::high_resolution_clock::now();
+        // tbb::blocked_range<Point2 *> r(host_vector.data(), host_vector.data() + num_elements);
+        // auto parallel_host_res = tbb::parallel_reduce(
+        //     r, Point2(),
+        //     [](const tbb::blocked_range<Point2 *> &r, Point2 init) -> Point2
+        //     {
+        //         Point2 local;
+        //         for (auto pt : r)
+        //         {
+        //             local.x += sin(cos(sin(tan(sqrt(pt.x)))));
+        //             local.y += sin(cos(sin(tan(sqrt(pt.x)))));
+        //         }
+        //         Point2 res;
+        //         res.x = init.x + local.x;
+        //         res.y = init.y + local.y;
+        //         return res;
+        //     },
+        //     [](Point2 a, Point2 b) -> Point2
+        //     {
+        //         Point2 ret;
+        //         ret.x = a.x + b.x;
+        //         ret.y = a.y + b.y;
+        //         return ret;
+        //     });
+        // delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
+        // std::cout << "Cpu Parallel TR took: " << delta << " millis\n";
+        // return parallel_host_res; });
 
         start = std::chrono::high_resolution_clock::now();
         // compute::transform_reduce(device_vector.begin(), device_vector.end(), &total_device, dist2, compute::plus<float>(), queue);
-        compute::transform_reduce(device_vector.begin(), device_vector.end(), &reduce_result, sqrt2, sqrt2_plus, queue);
+        try
+        {
+            compute::transform(device_vector.begin(), device_vector.end(), device_vector.begin(), sqrt2, queue);
+            // compute::transform_reduce(device_vector.begin(), device_vector.end(), &reduce_result, sqrt2, sqrt2_plus, queue);
+        }
+        catch (std::exception &err)
+        {
+            std::cout << err.what() << std::endl;
+            exit(-1);
+        }
         delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
 
         std::cout << "GPU TR took: " << delta << " millis\n";
 
         // promise.wait();
-    //    auto parallel_host_res =  promise.get();
+        //    auto parallel_host_res =  promise.get();
         std::cout << "gpu == cpu == pcpu\n";
         // std::cout << reduce_result << " == " << total_host << " == " << parallel_host_res << "\n";
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    float total_device = 0.;
+    Point2 reduce_result{0., 0.};
     start = std::chrono::high_resolution_clock::now();
-    compute::transform_reduce(device_vector.begin(), device_vector.end(), &total_device, dist2, compute::plus<float>(), queue);
+    compute::transform_reduce(device_vector.begin(), device_vector.end(), &reduce_result, sqrt2, sqrt2_plus, queue);
     delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
     std::cout << "GPU Post compilation took: " << delta << " millis\n";
 
-    std::vector<float> host_results(num_elements);
-    start = std::chrono::high_resolution_clock::now();
-    compute::copy(device_results.begin(), device_results.end(), host_results.begin(), queue);
-    delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
-    std::cout << "Copy from GPU took: " << delta << " millis\n";
+    // std::vector<float> host_results(num_elements);
+    // start = std::chrono::high_resolution_clock::now();
+    // compute::copy(device_results.begin(), device_results.end(), host_results.begin(), queue);
+    // delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start).count();
+    // std::cout << "Copy from GPU took: " << delta << " millis\n";
 
-    std::cout << "gpu : " << host_results[0] << std::endl;
-    std::cout << "cpu res: " << total_host << std::endl;
+    // std::cout << "gpu : " << host_results[0] << std::endl;
+    // std::cout << "cpu res: " << total_host << std::endl;
 
     std::cin.get();
 }
